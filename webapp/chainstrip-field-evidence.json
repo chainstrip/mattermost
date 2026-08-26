@@ -1,0 +1,18 @@
+{
+  "v": 1,
+  "deps": {},
+  "runs": [
+    {
+      "runId": "2026-08-23T07-18-46-106Z",
+      "generatedAt": "2026-08-23T07:22:23.501Z",
+      "mode": "run",
+      "baseUrl": "http://localhost:8065",
+      "trimHealthy": true,
+      "trimEvidence": "none-observed",
+      "stubThrows": 0,
+      "markerWindows": 0,
+      "ingestedAt": "2026-08-23T07:22:51.784Z",
+      "fileSha256": "5b2da9149c60d8fb33df22cac7ad0361b065609ba2820a91ba35d890c572a679"
+    }
+  ]
+}

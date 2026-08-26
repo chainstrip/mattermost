@@ -1,0 +1,52 @@
+# Local mattermost services — Linux / any docker-compose host.
+# (macOS without Docker uses deploy/services.sh via Apple Container.)
+#
+#   docker compose -f deploy/compose.services.yml up -d --wait
+#
+# The server serves the webapp client from /mattermost/client — the mount
+# points at the cove2e workspace build when chainstrip drives this
+# (CS_COVE2E_WS), else this checkout's own channels/dist (the ".." default
+# resolves from this file's directory = the webapp root). DB is ephemeral:
+# mattermost's e2e global-setup self-seeds a fresh server.
+name: mm-services
+services:
+  db:
+    image: postgres:14
+    container_name: mm-db
+    environment:
+      POSTGRES_USER: mmuser
+      POSTGRES_PASSWORD: mostest
+      POSTGRES_DB: mattermost_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mmuser -d mattermost_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+  server:
+    # Mattermost publishes NO arm64 images — on amd64 hosts the default below
+    # works directly; on arm64 build the local image first (see
+    # deploy/Dockerfile.server / services.sh) and set MM_SERVER_IMAGE.
+    image: "${MM_SERVER_IMAGE:-mattermost/mattermost-enterprise-edition:latest}"
+    container_name: mm-server
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8065:8065"
+    volumes:
+      - "${CS_COVE2E_WS:-..}/channels/dist:/mattermost/client"
+    environment:
+      MM_SQLSETTINGS_DRIVERNAME: postgres
+      MM_SQLSETTINGS_DATASOURCE: "postgres://mmuser:mostest@db:5432/mattermost_test?sslmode=disable&connect_timeout=10&binary_parameters=yes"
+      MM_SERVICESETTINGS_SITEURL: http://localhost:8065
+      MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
+      MM_SERVICESETTINGS_ENABLESECURITYFIXALERT: "false"
+      MM_SERVICESETTINGS_ALLOWCORSFROM: "*"
+      MM_SERVICEENVIRONMENT: test
+      MM_PLUGINSETTINGS_ENABLE: "true"
+      # The e2e suite's initSetup patches EnableUploads via the config API,
+      # which release builds refuse unless env-enabled.
+      MM_PLUGINSETTINGS_ENABLEUPLOADS: "true"
+      MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
+      MM_EMAILSETTINGS_SMTPSERVER: localhost
+      MM_CLUSTERSETTINGS_READONLYCONFIG: "false"
