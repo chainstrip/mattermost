@@ -54,4 +54,8 @@ jobs:
         with:
           name: baseline-report
           path: .chainstrip/*-report.json
+          # .chainstrip is a DOT-directory, and the action skips hidden paths by
+          # default: without this every "baseline-report" artifact uploaded zero
+          # files and the step still reported success (if-no-files-found: ignore).
+          include-hidden-files: true
           if-no-files-found: ignore

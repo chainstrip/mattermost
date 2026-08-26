@@ -63,4 +63,5 @@ jobs:
         with:
           name: update-gate-report
           path: .chainstrip/gate-report.json
+          include-hidden-files: true # .chainstrip is a dot-dir; hidden paths are skipped by default
           if-no-files-found: ignore
