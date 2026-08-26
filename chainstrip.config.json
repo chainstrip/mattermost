@@ -1,0 +1,16 @@
+{
+  "target": "webapp",
+  "stateDir": ".chainstrip",
+  "testCommand": ["npm", "run", "test", "--"],
+  "testCwd": "channels",
+  "testRunner": "jest",
+  "buildCommand": ["npm", "run", "build"],
+  "buildCwd": "channels",
+  "covtoolchain": {
+    "commands": [["npm", "run", "build"]],
+    "cwd": "channels"
+  },
+  "update": {
+    "block": ["retained-surface-changed", "validation-regression", "capability-escalation", "manual-review-required", "expanded-usage-vulnerable", "new-dependency", "reachable-cve"]
+  }
+}

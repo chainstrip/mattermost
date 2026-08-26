@@ -1,0 +1,66 @@
+name: chainstrip update gate
+
+# The light half of the split. Runs on every PR that touches dependencies,
+# RESTORES the baseline the trunk job cached, and runs the no-arg update scan:
+# it diffs the PR's installed tree against the baseline and classifies each
+# dependency change (new dep / expanded usage / version bump). A finding in the
+# block policy (chainstrip.config.json -> update.block) fails the check via a
+# non-zero exit. A reviewer waives a safe block by committing
+# chainstrip-approvals.json to the PR (see CHAINSTRIP.md).
+
+on:
+  pull_request:
+    paths:
+      - "webapp/package.json"
+      - "webapp/package-lock.json"
+      - "webapp/channels/package.json"
+      - "webapp/platform/**/package.json"
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    # 90 min: the gate re-validates only the changed deps' mapped tests, but a
+    # single jest suite pass on this webapp is far slower than a small target's.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: read # read @chainstrip/cli from GitHub Packages with the ambient token
+      pull-requests: write # the sticky verdict comment (gate-pr-comment.mjs)
+    env:
+      CHAINSTRIP_RUN_ORIGIN: ci
+      NODE_OPTIONS: --max_old_space_size=5120 # what the webapp's own CI gives jest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/webapp-setup # node from .nvmrc + npm install + platform packages
+        with:
+          read-only: "true"
+      - name: restore the baseline (built on trunk)
+        uses: actions/cache/restore@v4
+        with:
+          key: chainstrip-baseline-${{ hashFiles('webapp/package-lock.json') }}
+          restore-keys: chainstrip-baseline-
+          path: |
+            .chainstrip/artifacts
+            .chainstrip/extracted-deps
+            .chainstrip/inventory.json
+            .chainstrip/tiers.json
+            .chainstrip/test-impact-map.json
+            .chainstrip/covtrim-report.json
+            .chainstrip/fileprune-report.json
+      - uses: ./.github/actions/setup-chainstrip
+        with:
+          version: ${{ vars.CHAINSTRIP_CLI_VERSION || 'latest' }}
+      - name: gate the dependency change
+        run: $CHAINSTRIP update # no-arg scan; non-zero exit on a blocking verdict
+      - name: comment the verdict on the PR # sticky: one comment, updated in place
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/gate-pr-comment.mjs "${{ github.event.pull_request.number }}"
+      - name: upload gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-gate-report
+          path: .chainstrip/gate-report.json
+          if-no-files-found: ignore
