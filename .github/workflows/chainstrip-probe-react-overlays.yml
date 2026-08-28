@@ -42,6 +42,7 @@ jobs:
       CHAINSTRIP_RUN_ORIGIN: ci
       NODE_OPTIONS: --max_old_space_size=5120
       DEP: react-overlays
+      FILE: src/components/delete_post_modal/delete_post_modal.test.tsx
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/webapp-setup
@@ -56,26 +57,26 @@ jobs:
         run: $CHAINSTRIP trace
       - name: extract the dep under test
         run: $CHAINSTRIP extract "$DEP"
-      - name: repeat the FULL per-dep differential
+      - name: measure the single-file failure RATE
         run: |
           set -uo pipefail
           n="${{ inputs.repeats }}"
-          pass=0; fail=0
+          val=0; base=0; ovl=0; other=0
           for i in $(seq 1 "$n"); do
-            echo "===== attempt $i/$n"
-            # `validate --tests` runs the SAME differential the sweep runs
-            # (stock arm, overlay arm, import-smoke), restricted to one file.
-            if $CHAINSTRIP validate "$DEP"; then
-              pass=$((pass+1)); echo "attempt $i: PASSED (no regression seen)"
-            else
-              fail=$((fail+1)); echo "attempt $i: FAILED (regression seen)"
-            fi
+            # Parse the VERDICT. The previous probe tested the exit code, and
+            # `validate` exits 0 for baseline-failed too, so "clean 3/3" was
+            # counted from runs whose overlay arm never executed.
+            v=$($CHAINSTRIP validate "$DEP" --tests "$FILE" 2>&1 | grep -oE "verdict: [a-z-]+" | tail -1)
+            echo "attempt $i/$n -> ${v:-<none>}"
+            case "$v" in
+              *validated)       val=$((val+1));;
+              *baseline-failed) base=$((base+1));;
+              *overlay-failed)  ovl=$((ovl+1));;
+              *)                other=$((other+1));;
+            esac
           done
-          echo "===== react-overlays FULL mapped set on $(uname -s) $(nproc) cores"
-          echo "===== reproduced the failure $fail/$n; clean $pass/$n"
-          # Deterministic either way is a RESULT, not an error: this job reports,
-          # it never gates. A mixed result is the most informative outcome of the
-          # three, because it settles the question as "intermittent" outright.
+          echo "===== $FILE alone, overlay applied, on $(uname -s) $(nproc) cores"
+          echo "===== validated=$val  overlay-failed=$ovl  baseline-failed=$base  other=$other  (n=$n)"
       - name: upload validation reports
         if: always()
         uses: actions/upload-artifact@v4
