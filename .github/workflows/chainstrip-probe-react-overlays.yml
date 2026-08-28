@@ -16,9 +16,13 @@ name: probe react-overlays (one-off)
 # observation cannot tell those apart, which is why this exists rather than a
 # verdict being written up from a single run.
 #
-# It runs the SINGLE implicated test file, so each repeat costs seconds, and it
-# runs both arms explicitly: stock first (must pass, or the file is simply
-# broken here and the differential means nothing), then the extraction overlaid.
+# CORRECTED after the first attempt: that version ran the SINGLE implicated test
+# file and got 0/5, which settled nothing. The baseline's overlay arm failed on
+# 48 files, all modal components — react-overlays' own surface — so the failure
+# is broad, and a single-file run cannot exhibit it. Worse, the jsdom leak this
+# is entangled with is CROSS-FILE, and a lone file is precisely the context
+# where a cross-file leak cannot occur. This runs the FULL mapped set, which is
+# what the sweep actually validated.
 
 on:
   workflow_dispatch:
@@ -38,7 +42,6 @@ jobs:
       CHAINSTRIP_RUN_ORIGIN: ci
       NODE_OPTIONS: --max_old_space_size=5120
       DEP: react-overlays
-      FILE: src/components/delete_post_modal/delete_post_modal.test.tsx
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/webapp-setup
@@ -49,9 +52,11 @@ jobs:
         run: |
           $CHAINSTRIP inventory
           $CHAINSTRIP classify
+      - name: trace (the mapped set is what the sweep validated against)
+        run: $CHAINSTRIP trace
       - name: extract the dep under test
         run: $CHAINSTRIP extract "$DEP"
-      - name: repeat the per-file differential
+      - name: repeat the FULL per-dep differential
         run: |
           set -uo pipefail
           n="${{ inputs.repeats }}"
@@ -60,13 +65,13 @@ jobs:
             echo "===== attempt $i/$n"
             # `validate --tests` runs the SAME differential the sweep runs
             # (stock arm, overlay arm, import-smoke), restricted to one file.
-            if $CHAINSTRIP validate "$DEP" --tests "$FILE"; then
+            if $CHAINSTRIP validate "$DEP"; then
               pass=$((pass+1)); echo "attempt $i: PASSED (no regression seen)"
             else
               fail=$((fail+1)); echo "attempt $i: FAILED (regression seen)"
             fi
           done
-          echo "===== react-overlays / $FILE on $(uname -s) $(nproc) cores"
+          echo "===== react-overlays FULL mapped set on $(uname -s) $(nproc) cores"
           echo "===== reproduced the failure $fail/$n; clean $pass/$n"
           # Deterministic either way is a RESULT, not an error: this job reports,
           # it never gates. A mixed result is the most informative outcome of the
