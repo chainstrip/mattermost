@@ -1,0 +1,81 @@
+name: probe react-overlays (one-off)
+
+# A ONE-OFF measurement, not a gate. Nothing depends on it and nothing blocks
+# on it, so it is workflow_dispatch only.
+#
+# WHY. On cli 0.3.8 the same commit validates react-overlays on macOS and rules
+# it overlay-failed on this Linux runner. That is NOT the tool disagreeing with
+# itself on the same evidence — the Linux run CONFIRMED the failure by the
+# isolation standard (delete_post_modal.test.tsx failed alone with the overlay
+# and passed alone at stock, twice each), while three hand-run isolation
+# attempts on macOS could not reproduce it at all.
+#
+# So the open question is exactly one thing: on Linux, does that failure
+# REPRODUCE? A genuine platform-specific extraction regression fails every time.
+# An intermittent that isolation happened to catch once does not. One
+# observation cannot tell those apart, which is why this exists rather than a
+# verdict being written up from a single run.
+#
+# It runs the SINGLE implicated test file, so each repeat costs seconds, and it
+# runs both arms explicitly: stock first (must pass, or the file is simply
+# broken here and the differential means nothing), then the extraction overlaid.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: "how many times to repeat the differential"
+        default: "5"
+
+jobs:
+  probe:
+    runs-on: ${{ vars.CHAINSTRIP_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    env:
+      CHAINSTRIP_RUN_ORIGIN: ci
+      NODE_OPTIONS: --max_old_space_size=5120
+      DEP: react-overlays
+      FILE: src/components/delete_post_modal/delete_post_modal.test.tsx
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/webapp-setup
+      - uses: ./.github/actions/setup-chainstrip
+        with:
+          version: ${{ vars.CHAINSTRIP_CLI_VERSION || 'latest' }}
+      - name: inventory + classify
+        run: |
+          $CHAINSTRIP inventory
+          $CHAINSTRIP classify
+      - name: extract the dep under test
+        run: $CHAINSTRIP extract "$DEP"
+      - name: repeat the per-file differential
+        run: |
+          set -uo pipefail
+          n="${{ inputs.repeats }}"
+          pass=0; fail=0
+          for i in $(seq 1 "$n"); do
+            echo "===== attempt $i/$n"
+            # `validate --tests` runs the SAME differential the sweep runs
+            # (stock arm, overlay arm, import-smoke), restricted to one file.
+            if $CHAINSTRIP validate "$DEP" --tests "$FILE"; then
+              pass=$((pass+1)); echo "attempt $i: PASSED (no regression seen)"
+            else
+              fail=$((fail+1)); echo "attempt $i: FAILED (regression seen)"
+            fi
+          done
+          echo "===== react-overlays / $FILE on $(uname -s) $(nproc) cores"
+          echo "===== reproduced the failure $fail/$n; clean $pass/$n"
+          # Deterministic either way is a RESULT, not an error: this job reports,
+          # it never gates. A mixed result is the most informative outcome of the
+          # three, because it settles the question as "intermittent" outright.
+      - name: upload validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: react-overlays-probe
+          path: .chainstrip/*-report.json
+          include-hidden-files: true
+          if-no-files-found: ignore
