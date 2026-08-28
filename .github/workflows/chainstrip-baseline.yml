@@ -11,6 +11,20 @@ name: chainstrip baseline (warm)
 on:
   push:
     branches: [master]
+    # A ~3.7-hour job on a SINGLE self-hosted runner, so what triggers it
+    # matters. Editing another workflow cannot change what the pipeline
+    # measures, and a needless baseline OCCUPIES the runner: pushing a one-off
+    # probe workflow started a full baseline 6s before the probe was
+    # dispatched, and the 15-minute measurement sat queued behind it until the
+    # baseline was cancelled by hand. Ignore paths that cannot affect the
+    # result. `chainstrip-baseline.yml` itself is deliberately NOT ignored — a
+    # change to this file DOES change the run.
+    paths-ignore:
+      - ".github/workflows/chainstrip-probe-*.yml"
+      - ".github/workflows/chainstrip-gate.yml"
+      - ".github/scripts/**"
+      - "CHAINSTRIP.md"
+      - "**.md"
   workflow_dispatch: {}
 
 concurrency:
