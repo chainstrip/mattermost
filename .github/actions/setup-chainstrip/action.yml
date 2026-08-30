@@ -18,6 +18,17 @@ inputs:
       published one package per platform, and because a run that silently lost
       its launcher would report `kernel: false` rather than failing.
     default: ""
+  csbox_path:
+    description: >-
+      Absolute path to an already-installed csbox, used INSTEAD of `csbox`, and
+      it wins when both are set. This is the WEAKER option and it exists for a
+      measured reason: GitHub Packages access is per PACKAGE, and this repo's
+      ambient token reads @chainstrip/cli while the same token was refused
+      @chainstrip/csbox-linux-x64 with `403 permission_denied: read_package`.
+      Granting that package Actions read access to this repo is the durable fix
+      and makes `csbox` work; a path is what a self-hosted runner can use in the
+      meantime, and it ties the run to one machine.
+    default: ""
 runs:
   using: composite
   steps:
@@ -49,10 +60,21 @@ runs:
         # nobody notices was absent — the "absence reads as fine" failure this
         # pipeline keeps recording. `npm install` already exits non-zero and
         # `set -e` is on, and the check below covers the case where it does not.
-        if [ -n "${{ inputs.csbox }}" ]; then
+        bin=""
+        if [ -n "${{ inputs.csbox_path }}" ]; then
+          bin="${{ inputs.csbox_path }}"
+          test -x "$bin" || { echo "csbox_path names $bin, which is not an executable file"; exit 1; }
+          # CHAINSTRIP_CSBOX is the resolver's ONE explicit override, and typing
+          # it is the decision — the resolver otherwise asks node, and refuses
+          # to search the filesystem, because two earlier designs that did were
+          # defeated by planting a binary.
+          echo "CHAINSTRIP_CSBOX=$bin" >> "$GITHUB_ENV"
+        elif [ -n "${{ inputs.csbox }}" ]; then
           ( cd "$dst" && npm install "${{ inputs.csbox }}" )
           bin="$dst/node_modules/@chainstrip/csbox-linux-$(node -p 'process.arch')/bin/csbox"
           test -x "$bin" || { echo "csbox installed but $bin is not executable"; exit 1; }
+        fi
+        if [ -n "$bin" ]; then
           "$bin" --version
           # WHAT THIS KERNEL CAN ACTUALLY ENFORCE, recorded before anything runs.
           # "linux-x64" is not evidence: Landlock can be absent below 5.13 or

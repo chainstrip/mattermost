@@ -53,6 +53,9 @@ jobs:
           # config runnable. The variable lets the launcher be pinned or dropped
           # without editing the workflow; blank means no containment.
           csbox: ${{ vars.CHAINSTRIP_CSBOX_PACKAGE || '@chainstrip/csbox-linux-x64@0.1.0' }}
+          # Set CHAINSTRIP_CSBOX_PATH while the package is unreadable to this
+          # repo's token; clearing it goes back to the npm install.
+          csbox_path: ${{ vars.CHAINSTRIP_CSBOX_PATH }}
       - name: build baseline
         run: $CHAINSTRIP run
       - name: cache the gate baseline
