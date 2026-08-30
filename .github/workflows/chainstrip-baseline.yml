@@ -47,6 +47,12 @@ jobs:
       - uses: ./.github/actions/setup-chainstrip
         with:
           version: ${{ vars.CHAINSTRIP_CLI_VERSION || 'latest' }}
+          # chainstrip.config.json says `"sandbox": {"mode": "enforce"}`, and
+          # enforce without a launcher REFUSES the run rather than quietly
+          # degrading — so this is not optional decoration, it is what makes the
+          # config runnable. The variable lets the launcher be pinned or dropped
+          # without editing the workflow; blank means no containment.
+          csbox: ${{ vars.CHAINSTRIP_CSBOX_PACKAGE || '@chainstrip/csbox-linux-x64@0.1.0' }}
       - name: build baseline
         run: $CHAINSTRIP run
       - name: cache the gate baseline

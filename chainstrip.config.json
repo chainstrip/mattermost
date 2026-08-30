@@ -1,6 +1,7 @@
 {
   "target": "webapp",
   "stateDir": ".chainstrip",
+  "sandbox": { "mode": "enforce", "allowDegraded": true },
   "testCommand": ["npm", "run", "test", "--"],
   "testCwd": "channels",
   "testRunner": "jest",

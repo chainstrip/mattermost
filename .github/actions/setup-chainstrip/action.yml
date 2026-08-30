@@ -10,6 +10,14 @@ inputs:
   version:
     description: "npm version or dist-tag (pin an exact version in real use)"
     default: latest
+  csbox:
+    description: >-
+      Containment launcher to install beside the CLI, as name@version. Blank
+      installs none, and chainstrip then runs uncontained unless the config
+      says otherwise. It is a SEPARATE input because it is a native binary
+      published one package per platform, and because a run that silently lost
+      its launcher would report `kernel: false` rather than failing.
+    default: ""
 runs:
   using: composite
   steps:
@@ -27,3 +35,29 @@ runs:
         EOF
         ( cd "$dst" && npm install "${{ inputs.package }}@${{ inputs.version }}" )
         echo "CHAINSTRIP=node $dst/node_modules/${{ inputs.package }}/dist/cli.mjs" >> "$GITHUB_ENV"
+
+        # THE LAUNCHER GOES BESIDE THE CLI, so node's own resolution finds it.
+        # chainstrip locates csbox with
+        # `createRequire(import.meta.url).resolve("<pkg>/bin/csbox")` anchored at
+        # its own dist/cli.mjs — deliberately, because two earlier designs walked
+        # the filesystem and an independent reviewer defeated both by PLANTING a
+        # binary. Installing into the same prefix is what that resolution expects
+        # and needs no CHAINSTRIP_CSBOX override.
+        #
+        # A FAILED INSTALL IS FATAL rather than a warning. The alternative is a
+        # run that reports `kernel: false` and completes, which is enforcement
+        # nobody notices was absent — the "absence reads as fine" failure this
+        # pipeline keeps recording. `npm install` already exits non-zero and
+        # `set -e` is on, and the check below covers the case where it does not.
+        if [ -n "${{ inputs.csbox }}" ]; then
+          ( cd "$dst" && npm install "${{ inputs.csbox }}" )
+          bin="$dst/node_modules/@chainstrip/csbox-linux-$(node -p 'process.arch')/bin/csbox"
+          test -x "$bin" || { echo "csbox installed but $bin is not executable"; exit 1; }
+          "$bin" --version
+          # WHAT THIS KERNEL CAN ACTUALLY ENFORCE, recorded before anything runs.
+          # "linux-x64" is not evidence: Landlock can be absent below 5.13 or
+          # missing from the boot LSM list. The probe is the only thing that
+          # answers that, and a run whose phases are `partial` should say so in
+          # its log rather than in a report nobody opens.
+          "$bin" probe | head -c 600; echo
+        fi
