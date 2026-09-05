@@ -67,7 +67,8 @@
     "env": {
       "PW_BASE_URL": "http://localhost:8065",
       "PW_HEADLESS": "true",
-      "DOCKER_AUTH_CONFIG": "{}"
+      "DOCKER_AUTH_CONFIG": "{}",
+      "PLAYWRIGHT_BROWSERS_PATH": "0"
     },
     "browserCoverage": true,
     "assets": [
