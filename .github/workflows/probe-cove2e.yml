@@ -78,14 +78,21 @@ jobs:
             .chainstrip/test-impact-map.json
             .chainstrip/covtrim-report.json
             .chainstrip/fileprune-report.json
+      # cove2e reads sweep-report.json (shippingOverlayNames) and
+      # buildgate-report.json, and the cache carries neither. They come from the
+      # run that produced the cached extracted-deps, so the three agree.
+      #
+      # The FIRST-PARTY action, not `gh run download`: these self-hosted runners
+      # have no GitHub CLI, and the step died with `gh: command not found`.
       - name: probe/fetch-the-reports-the-cache-does-not-carry
-        env:
-          GH_TOKEN: ${{ github.token }}
+        uses: actions/download-artifact@v4
+        with:
+          name: baseline-report
+          run-id: ${{ inputs.state_run_id }}
+          github-token: ${{ github.token }}
+          path: /tmp/state
+      - name: probe/place-the-reports
         run: |
-          # cove2e reads sweep-report.json (shippingOverlayNames) and
-          # buildgate-report.json, and the cache carries neither. They come from
-          # the run that produced the cached extracted-deps, so the three agree.
-          gh run download ${{ inputs.state_run_id }} -R ${{ github.repository }} -n baseline-report -D /tmp/state
           cp /tmp/state/sweep-report.json /tmp/state/buildgate-report.json .chainstrip/ 2>/dev/null || true
           ls -la .chainstrip/ | head -20
           node -e "const s=require('./.chainstrip/sweep-report.json');const e=s.entries||s.deps||[];console.log('sweep entries:',e.length,'validated:',e.filter(x=>x.outcome==='validated').length)"
