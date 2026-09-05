@@ -68,6 +68,19 @@ jobs:
         working-directory: e2e-tests/playwright
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          # INSTALL THE BROWSER WHERE THE CHILD WILL LOOK. Playwright resolves
+          # its browsers under $HOME/.cache/ms-playwright, and cove2e's suite
+          # child runs with the SANDBOX home - so a browser installed into the
+          # runner's real home is invisible to it. MEASURED 2026-09-05: the
+          # suite ran, reached its setup specs, and every one failed with
+          # "Executable doesn't exist at
+          # .chainstrip/sandbox/home/.cache/ms-playwright/chromium_headless_shell-1228/...".
+          #
+          # `0` is playwright's own answer: keep the browser inside
+          # node_modules, which is a directory the child already has. It must be
+          # set for BOTH halves - here, and in the config's e2e.env - or the two
+          # look in different places, which is the bug restated.
+          PLAYWRIGHT_BROWSERS_PATH: "0"
         run: |
           npm ci
           # `--with-deps` needs sudo, which a self-hosted runner may not grant.
