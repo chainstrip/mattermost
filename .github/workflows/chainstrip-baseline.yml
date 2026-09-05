@@ -54,6 +54,26 @@ jobs:
           # Set CHAINSTRIP_CSBOX_PATH while the package is unreadable to this
           # repo's token; clearing it goes back to the npm install.
           csbox_path: ${{ vars.CHAINSTRIP_CSBOX_PATH }}
+      # cove2e runs the target's OWN e2e suite, and `e2e-tests/playwright` is a
+      # SEPARATE npm project that `webapp-setup` does not touch. Without this the
+      # suite dies before its first spec with a command-not-found, which is the
+      # incident CLAUDE.md records for 2026-08-25 ("rollup: command not found",
+      # exit 127) — and an e2e suite that never RAN captures nothing, so covtrim
+      # loses every function only a browser executes.
+      #
+      # Browsers are installed explicitly instead of through the project's
+      # postinstall, which fetches chromium AND firefox. `test:smoke` runs
+      # `--project=chrome`, so firefox is download time nothing uses.
+      - name: ci/e2e-playwright-setup
+        working-directory: e2e-tests/playwright
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: |
+          npm ci
+          # `--with-deps` needs sudo, which a self-hosted runner may not grant.
+          # Falling back keeps the run alive: the browser still installs, and a
+          # missing system library then surfaces at cove2e instead of here.
+          npx playwright install --with-deps chromium || npx playwright install chromium
       - name: build baseline
         run: $CHAINSTRIP run
       - name: cache the gate baseline
