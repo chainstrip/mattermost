@@ -1,0 +1,112 @@
+name: probe cove2e + covtrim (restored state)
+
+# THE CONFIRMATION WITHOUT THE PIPELINE IN FRONT OF IT.
+#
+# trace, sweep, buildgate and fileprune have been working for weeks and take
+# 2h45m. The question is only whether cove2e now captures browser coverage and
+# whether covtrim then accepts anything. Both are standalone commands, so this
+# restores the state a previous run produced and runs just those two.
+#
+# WHICH state matters. Run 33799727246 (2026-09-03) is the one whose
+# extracted-deps the `chainstrip-baseline-<lockhash>` cache holds, and its
+# covtrim accepted 0 of 62 deps with no browser evidence. Re-running covtrim on
+# THOSE SAME extractions, now with a browser capture, changes exactly one
+# variable. A fresh pipeline would change several.
+#
+# Dispatch only.
+on:
+  workflow_dispatch:
+    inputs:
+      state_run_id:
+        description: "run whose reports pair with the cached extracted-deps"
+        default: "33799727246"
+
+jobs:
+  probe:
+    # NOT the baseline's label - bench is busy with the full run, and a probe
+    # that queues behind the thing it pre-empts is worthless.
+    runs-on: self-hosted
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: read
+      actions: read
+    env:
+      CHAINSTRIP_RUN_ORIGIN: ci
+      NODE_OPTIONS: --max_old_space_size=5120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/webapp-setup
+      - uses: ./.github/actions/setup-chainstrip
+        with:
+          version: ${{ vars.CHAINSTRIP_CLI_VERSION || 'latest' }}
+          csbox: ${{ vars.CHAINSTRIP_CSBOX_PACKAGE || '@chainstrip/csbox-linux-x64@0.1.0' }}
+          csbox_path: ${{ vars.CHAINSTRIP_CSBOX_PATH }}
+      - name: probe/e2e-install
+        working-directory: e2e-tests/playwright
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_BROWSERS_PATH: "0"
+          PW_DEPS_DIR: ${{ github.workspace }}/.pw-deps
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium || npx playwright install chromium
+          BIN=$(ls -d node_modules/playwright-core/.local-browsers/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell 2>/dev/null | head -1)
+          echo "runner: $RUNNER_NAME"
+          echo "missing libraries BEFORE:"; ldd "$BIN" 2>/dev/null | grep "not found" || echo "  none"
+          if ldd "$BIN" 2>/dev/null | grep -q "not found"; then
+            pkgs="$(npx playwright install-deps --dry-run chromium 2>/dev/null | tr ' ' '\n' | grep -E '^lib[a-z0-9.+-]+$' | sort -u | tr '\n' ' ')"
+            [ -n "$pkgs" ] || pkgs="libnspr4 libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64"
+            (
+              mkdir -p "$PW_DEPS_DIR" && cd "$PW_DEPS_DIR" || exit 0
+              for one in $pkgs; do apt-get download "$one" 2>/dev/null || echo "    skip $one"; done
+              for d in *.deb; do [ -f "$d" ] || continue; dpkg -x "$d" . || true; done
+              echo "  unpacked $(find . -name '*.so*' 2>/dev/null | wc -l) shared objects"
+            ) || echo "  local unpack did not complete"
+            export LD_LIBRARY_PATH="$PW_DEPS_DIR/usr/lib/x86_64-linux-gnu:$PW_DEPS_DIR/lib/x86_64-linux-gnu"
+            echo "missing libraries AFTER:"; ldd "$BIN" 2>/dev/null | grep "not found" || echo "  none"
+          fi
+      - name: probe/restore-state
+        uses: actions/cache/restore@v4
+        with:
+          key: chainstrip-baseline-${{ hashFiles('webapp/package-lock.json') }}
+          path: |
+            .chainstrip/artifacts
+            .chainstrip/extracted-deps
+            .chainstrip/inventory.json
+            .chainstrip/tiers.json
+            .chainstrip/test-impact-map.json
+            .chainstrip/covtrim-report.json
+            .chainstrip/fileprune-report.json
+      - name: probe/fetch-the-reports-the-cache-does-not-carry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # cove2e reads sweep-report.json (shippingOverlayNames) and
+          # buildgate-report.json, and the cache carries neither. They come from
+          # the run that produced the cached extracted-deps, so the three agree.
+          gh run download ${{ inputs.state_run_id }} -R ${{ github.repository }} -n baseline-report -D /tmp/state
+          cp /tmp/state/sweep-report.json /tmp/state/buildgate-report.json .chainstrip/ 2>/dev/null || true
+          ls -la .chainstrip/ | head -20
+          node -e "const s=require('./.chainstrip/sweep-report.json');const e=s.entries||s.deps||[];console.log('sweep entries:',e.length,'validated:',e.filter(x=>x.outcome==='validated').length)"
+          node -e "const c=require('./.chainstrip/covtrim-report.json');const d=c.deps||[];console.log('BEFORE - covtrim accepted:',d.filter(x=>x.verdict==='accepted').length,'of',d.length)"
+      - name: probe/cove2e
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/.pw-deps/usr/lib/x86_64-linux-gnu:${{ github.workspace }}/.pw-deps/lib/x86_64-linux-gnu
+        run: $CHAINSTRIP cove2e
+      - name: probe/covtrim-with-the-browser-evidence
+        if: always()
+        run: |
+          $CHAINSTRIP covtrim --coverage-extra .chainstrip/cove2e-capture.json
+          node -e "const c=require('./.chainstrip/covtrim-report.json');const d=c.deps||[];console.log('AFTER  - covtrim accepted:',d.filter(x=>x.verdict==='accepted').length,'of',d.length);for(const n of ['@tiptap/core','tinycolor2']){const x=d.find(y=>y.name===n);if(x)console.log(' ',n,'functionsTotal',x.functionsTotal,'stubbed',x.stubbed,'unobserved',x.unobservedFiles,x.verdict)}"
+      - name: probe/upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cove2e-probe
+          include-hidden-files: true
+          if-no-files-found: warn
+          path: |
+            .chainstrip/*-report.json
+            .chainstrip/*.log
+            .chainstrip/cove2e-capture.json
