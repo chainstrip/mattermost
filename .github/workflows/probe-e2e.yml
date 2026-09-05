@@ -24,6 +24,18 @@ jobs:
         run: |
           npm ci
           npx playwright install --with-deps chromium || npx playwright install chromium
+      - name: probe/host-can-serve
+        run: |
+          echo "runner: $RUNNER_NAME"
+          echo "--- docker server:"
+          docker version --format '{{.Server.Version}}' || echo '  NO DOCKER SERVER - cove2e servicesUp will fail'
+          docker compose version || echo '  NO COMPOSE PLUGIN'
+          echo "--- this user can read its own docker config?"
+          if [ -f "$HOME/.docker/config.json" ]; then
+            (head -c 1 "$HOME/.docker/config.json" >/dev/null 2>&1 && echo "  readable") || echo "  UNREADABLE by $(id -un)"
+          else echo "  absent (fine)"; fi
+          echo "--- ports 8065 and 5432:"
+          (ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | grep -E ':(8065|5432)' && echo '  IN USE' || echo '  free'
       - name: probe/what-resolves
         working-directory: e2e-tests/playwright
         run: |
