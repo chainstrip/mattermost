@@ -17,40 +17,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/webapp-setup
-      - name: probe/e2e-playwright-setup
+      - name: probe/browser-without-root
         working-directory: e2e-tests/playwright
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          PLAYWRIGHT_BROWSERS_PATH: "0"
+          PW_DEPS_DIR: ${{ github.workspace }}/.pw-deps
         run: |
+          set -x
           npm ci
           npx playwright install --with-deps chromium || npx playwright install chromium
-      - name: probe/host-can-serve
-        run: |
-          echo "runner: $RUNNER_NAME"
-          echo "--- docker server:"
-          docker version --format '{{.Server.Version}}' || echo '  NO DOCKER SERVER - cove2e servicesUp will fail'
-          docker compose version || echo '  NO COMPOSE PLUGIN'
-          echo "--- this user can read its own docker config?"
-          if [ -f "$HOME/.docker/config.json" ]; then
-            (head -c 1 "$HOME/.docker/config.json" >/dev/null 2>&1 && echo "  readable") || echo "  UNREADABLE by $(id -un)"
-          else echo "  absent (fine)"; fi
-          echo "--- ports 8065 and 5432:"
-          (ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | grep -E ':(8065|5432)' && echo '  IN USE' || echo '  free'
-      - name: probe/what-resolves
-        working-directory: e2e-tests/playwright
-        run: |
-          echo "--- @mattermost/client:"
-          ls -la node_modules/@mattermost/ || true
-          node -e "console.log('client main:', require.resolve('@mattermost/client'))" || echo "  UNRESOLVABLE"
-          node -e "console.log('lib main:', require.resolve('@mattermost/playwright-lib'))" || echo "  UNRESOLVABLE"
-          echo "--- platform client build output:"
-          ls ../../webapp/platform/client/ || true
-          echo "--- lib dist present?"
-          ls lib/dist/ 2>/dev/null | head || echo "  NO lib/dist"
-      - name: probe/run-the-suite
-        working-directory: e2e-tests/playwright
-        continue-on-error: true
-        run: |
-          # No server is up, so the suite will fail - that is fine. The question
-          # is whether it fails at CONFIG LOAD (the module error) or later.
-          npm run test:smoke 2>&1 | head -60
+          BIN=$(ls -d node_modules/playwright-core/.local-browsers/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell 2>/dev/null | head -1)
+          echo "browser: $BIN"
+          echo "--- missing libraries BEFORE:"; ldd "$BIN" 2>/dev/null | grep "not found" || echo "  none"
+          pkgs="$(npx playwright install-deps --dry-run chromium 2>/dev/null | tr ' ' '\n' | grep -E '^lib[a-z0-9.+-]+$' | sort -u | tr '\n' ' ')"
+          [ -n "$pkgs" ] || pkgs="libnspr4 libnss3 libnssutil3 libsmime3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64"
+          echo "--- packages playwright names: $pkgs"
+          mkdir -p "$PW_DEPS_DIR" && (cd "$PW_DEPS_DIR" && (apt-get download $pkgs || true) && for d in *.deb; do [ -f "$d" ] && dpkg -x "$d" .; done)
+          export LD_LIBRARY_PATH="$PW_DEPS_DIR/usr/lib/x86_64-linux-gnu:$PW_DEPS_DIR/lib/x86_64-linux-gnu"
+          echo "--- missing libraries AFTER:"; ldd "$BIN" 2>/dev/null | grep "not found" || echo "  none"
+          echo "--- can playwright actually launch it?"
+          node -e "const{chromium}=require('playwright-core');chromium.launch().then(async b=>{const p=await b.newPage();await p.setContent('<h1>ok</h1>');console.log('LAUNCH OK, title len',(await p.content()).length);await b.close();process.exit(0);}).catch(e=>{console.log('LAUNCH FAILED:',String(e).slice(0,300));process.exit(1);})"
