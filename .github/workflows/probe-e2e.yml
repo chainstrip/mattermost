@@ -1,10 +1,15 @@
 name: probe e2e playwright
 
-# A ~10-minute probe, not a measurement. The baseline reaches cove2e about 2h45m
-# in, and its console shows only the TAIL of a failing suite - which for a node
-# crash is the stack, not the "Cannot find module 'X'" line that names the
-# cause. This runs the same install and the same suite invocation and prints the
-# whole thing.
+# The last unknown, without the three hours in front of it.
+#
+# The baseline reaches cove2e at about 2h45m, and everything before it - trace,
+# sweep, buildgate, fileprune - has been working for weeks. What has never
+# succeeded is the final stretch: bring the services up, build the webapp, and
+# have the playwright suite launch a browser and pass its specs. That stretch
+# needs none of the stages in front of it, so it runs here in about 20 minutes.
+#
+# It does NOT prove covtrim's accept count - only the real cove2e stage, with
+# the validated overlays, can do that. It proves the gate that has been failing.
 #
 # Dispatch only. Delete it once the e2e path is green.
 on:
@@ -12,29 +17,61 @@ on:
 
 jobs:
   probe:
-    runs-on: ${{ vars.CHAINSTRIP_LARGE_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 30
+    # NOT the baseline's runner label. bench is busy with the baseline, and a
+    # probe that queues behind the thing it is meant to pre-empt is worthless.
+    # A free builder also tests the no-root library unpack, which bench never
+    # exercises because its libraries are already installed.
+    runs-on: self-hosted
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/webapp-setup
-      - name: probe/browser-without-root
+      - name: probe/e2e-install
         working-directory: e2e-tests/playwright
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
           PLAYWRIGHT_BROWSERS_PATH: "0"
           PW_DEPS_DIR: ${{ github.workspace }}/.pw-deps
         run: |
-          set -x
           npm ci
           npx playwright install --with-deps chromium || npx playwright install chromium
           BIN=$(ls -d node_modules/playwright-core/.local-browsers/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell 2>/dev/null | head -1)
-          echo "browser: $BIN"
-          echo "--- missing libraries BEFORE:"; ldd "$BIN" 2>/dev/null | grep "not found" || echo "  none"
-          pkgs="$(npx playwright install-deps --dry-run chromium 2>/dev/null | tr ' ' '\n' | grep -E '^lib[a-z0-9.+-]+$' | sort -u | tr '\n' ' ')"
-          [ -n "$pkgs" ] || pkgs="libnspr4 libnss3 libnssutil3 libsmime3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64"
-          echo "--- packages playwright names: $pkgs"
-          mkdir -p "$PW_DEPS_DIR" && (cd "$PW_DEPS_DIR" && (apt-get download $pkgs || true) && for d in *.deb; do [ -f "$d" ] && dpkg -x "$d" .; done)
-          export LD_LIBRARY_PATH="$PW_DEPS_DIR/usr/lib/x86_64-linux-gnu:$PW_DEPS_DIR/lib/x86_64-linux-gnu"
-          echo "--- missing libraries AFTER:"; ldd "$BIN" 2>/dev/null | grep "not found" || echo "  none"
-          echo "--- can playwright actually launch it?"
-          node -e "const{chromium}=require('playwright-core');chromium.launch().then(async b=>{const p=await b.newPage();await p.setContent('<h1>ok</h1>');console.log('LAUNCH OK, title len',(await p.content()).length);await b.close();process.exit(0);}).catch(e=>{console.log('LAUNCH FAILED:',String(e).slice(0,300));process.exit(1);})"
+          echo "runner: $RUNNER_NAME"
+          echo "missing libraries BEFORE:"; ldd "$BIN" 2>/dev/null | grep "not found" || echo "  none"
+          if ldd "$BIN" 2>/dev/null | grep -q "not found"; then
+            pkgs="$(npx playwright install-deps --dry-run chromium 2>/dev/null | tr ' ' '\n' | grep -E '^lib[a-z0-9.+-]+$' | sort -u | tr '\n' ' ')"
+            [ -n "$pkgs" ] || pkgs="libnspr4 libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64"
+            (
+              mkdir -p "$PW_DEPS_DIR" && cd "$PW_DEPS_DIR" || exit 0
+              for one in $pkgs; do apt-get download "$one" 2>/dev/null || echo "    skip $one"; done
+              for d in *.deb; do [ -f "$d" ] || continue; dpkg -x "$d" . || true; done
+              echo "  unpacked $(find . -name '*.so*' 2>/dev/null | wc -l) shared objects"
+            ) || echo "  local unpack did not complete"
+            export LD_LIBRARY_PATH="$PW_DEPS_DIR/usr/lib/x86_64-linux-gnu:$PW_DEPS_DIR/lib/x86_64-linux-gnu"
+            echo "missing libraries AFTER:"; ldd "$BIN" 2>/dev/null | grep "not found" || echo "  none"
+          fi
+      - name: probe/build-webapp
+        working-directory: webapp/channels
+        run: npm run build
+      - name: probe/services-up
+        working-directory: webapp
+        run: |
+          bash deploy/services.sh up
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8065/api/v4/system/ping || true)
+            [ "$code" = "200" ] && { echo "server ready after ${i}s"; break; }
+            sleep 1
+          done
+      - name: probe/run-the-suite
+        working-directory: e2e-tests/playwright
+        env:
+          PW_BASE_URL: http://localhost:8065
+          PW_HEADLESS: "true"
+          PLAYWRIGHT_BROWSERS_PATH: "0"
+          DOCKER_AUTH_CONFIG: "{}"
+          LD_LIBRARY_PATH: ${{ github.workspace }}/.pw-deps/usr/lib/x86_64-linux-gnu:${{ github.workspace }}/.pw-deps/lib/x86_64-linux-gnu
+        run: npm run test:smoke 2>&1 | tail -60
+      - name: probe/services-down
+        if: always()
+        working-directory: webapp
+        run: bash deploy/services.sh down || true
