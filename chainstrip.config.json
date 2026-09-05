@@ -3,7 +3,8 @@
   "stateDir": ".chainstrip",
   "sandbox": {
     "mode": "enforce",
-    "allowDegraded": true
+    "allowDegraded": true,
+    "policyDir": ".chainstrip-policies"
   },
   "testCommand": [
     "npm",
