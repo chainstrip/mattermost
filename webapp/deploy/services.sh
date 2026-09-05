@@ -245,6 +245,15 @@ compose_up() {
   if [ ! -f "$CLIENT_DIR/root.html" ]; then
     echo "no built client at $CLIENT_DIR — run the webapp production build first" >&2
   fi
+  # THE SERVER MUST TRACK MASTER, because this checkout does. MEASURED
+  # 2026-08-22: master's client4 calls GET /api/v4/license/client with no
+  # `format=old`, and a RELEASE server answers 400 — which kills the e2e suite in
+  # globalSetup before a single browser opens, so cove2e captures nothing. The
+  # compose file's own default is a release tag, which is right for someone
+  # running the stack by hand and wrong for the suite. amd64 only, which is the
+  # same constraint the Apple Container path documents.
+  export MM_SERVER_IMAGE="${MM_SERVER_IMAGE:-mattermostdevelopment/mattermost-enterprise-edition:master}"
+  echo "server image: $MM_SERVER_IMAGE"
   docker compose -f "$COMPOSE_FILE" up -d --wait
   echo "services up (docker compose); client mounted from $CLIENT_DIR"
 }
