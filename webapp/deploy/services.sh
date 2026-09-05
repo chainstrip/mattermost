@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Local mattermost services via Apple Container — macOS. Linux/Docker hosts
-# use deploy/compose.services.yml instead (see README).
+# Local mattermost services, on either backend. Apple Container when the host
+# has it (macOS, no Docker needed); otherwise deploy/compose.services.yml
+# through docker compose. ONE command either way, because chainstrip's
+# `e2e.servicesUp` is one command and it runs on both.
 #
 #   deploy/services.sh up|down|status
 #
@@ -216,6 +218,57 @@ status() {
   container list
   curl -s -o /dev/null -w "ping: %{http_code}\n" http://localhost:8065/api/v4/system/ping || true
 }
+
+# THE BACKEND IS CHOSEN BY WHAT THE HOST HAS, not by a platform name. This
+# script was Apple Container only, and its header told a Linux reader to run
+# `docker compose -f deploy/compose.services.yml` by hand instead — which is
+# fine for a person and useless for chainstrip, whose `e2e.servicesUp` is ONE
+# command that has to work wherever the run happens. On the CI runner it failed
+# at `container system status` with a command-not-found, so cove2e never brought
+# the services up, the e2e suite never ran, and covtrim lost every function only
+# a browser executes.
+#
+# The compose file already does the whole job for a docker host, `CS_COVE2E_WS`
+# mount included, so this delegates rather than reimplementing. `up --wait`
+# blocks on the DB healthcheck; the server has none, and chainstrip polls
+# `readyUrl` for it.
+#
+# `container` is probed rather than `uname`: a macOS host without it should get
+# the same clear failure as a Linux one, and a Linux host that somehow has
+# docker AND container should take the supported path.
+COMPOSE_FILE="$PWD/deploy/compose.services.yml"
+
+have_container() { command -v container >/dev/null 2>&1; }
+have_compose() { docker compose version >/dev/null 2>&1; }
+
+compose_up() {
+  if [ ! -f "$CLIENT_DIR/root.html" ]; then
+    echo "no built client at $CLIENT_DIR — run the webapp production build first" >&2
+  fi
+  docker compose -f "$COMPOSE_FILE" up -d --wait
+  echo "services up (docker compose); client mounted from $CLIENT_DIR"
+}
+compose_down() { docker compose -f "$COMPOSE_FILE" down -v; echo "services down"; }
+compose_status() {
+  docker compose -f "$COMPOSE_FILE" ps
+  curl -s -o /dev/null -w "ping: %{http_code}\n" http://localhost:8065/api/v4/system/ping || true
+}
+
+if ! have_container; then
+  if ! have_compose; then
+    echo "neither Apple Container (\`container\`) nor \`docker compose\` is available — install one; this script needs a container runtime to bring up postgres and the mattermost server" >&2
+    exit 1
+  fi
+  case "${1:-}" in
+    up|up-seeded) compose_up ;;
+    down) compose_down ;;
+    status) compose_status ;;
+    seed) echo "seed: not needed on the compose path — the playwright suite's global setup creates the sysadmin and team on a fresh server" ;;
+    build-server) echo "build-server is the Apple Container/arm64 path; on a docker host set MM_SERVER_IMAGE instead" >&2; exit 2 ;;
+    *) echo "usage: $0 up|up-seeded|seed|down|status" >&2; exit 2 ;;
+  esac
+  exit 0
+fi
 
 case "${1:-}" in
   build-server) build_server ;;
