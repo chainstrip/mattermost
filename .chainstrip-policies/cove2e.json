@@ -1,6 +1,0 @@
-{
-  "phase": "cove2e",
-  "fs": {
-    "rw": ["webapp/platform"]
-  }
-}
