@@ -1,0 +1,44 @@
+name: probe e2e playwright
+
+# A ~10-minute probe, not a measurement. The baseline reaches cove2e about 2h45m
+# in, and its console shows only the TAIL of a failing suite - which for a node
+# crash is the stack, not the "Cannot find module 'X'" line that names the
+# cause. This runs the same install and the same suite invocation and prints the
+# whole thing.
+#
+# Dispatch only. Delete it once the e2e path is green.
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ${{ vars.CHAINSTRIP_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/webapp-setup
+      - name: probe/e2e-playwright-setup
+        working-directory: e2e-tests/playwright
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium || npx playwright install chromium
+      - name: probe/what-resolves
+        working-directory: e2e-tests/playwright
+        run: |
+          echo "--- @mattermost/client:"
+          ls -la node_modules/@mattermost/ || true
+          node -e "console.log('client main:', require.resolve('@mattermost/client'))" || echo "  UNRESOLVABLE"
+          node -e "console.log('lib main:', require.resolve('@mattermost/playwright-lib'))" || echo "  UNRESOLVABLE"
+          echo "--- platform client build output:"
+          ls ../../webapp/platform/client/ || true
+          echo "--- lib dist present?"
+          ls lib/dist/ 2>/dev/null | head || echo "  NO lib/dist"
+      - name: probe/run-the-suite
+        working-directory: e2e-tests/playwright
+        continue-on-error: true
+        run: |
+          # No server is up, so the suite will fail - that is fine. The question
+          # is whether it fails at CONFIG LOAD (the module error) or later.
+          npm run test:smoke 2>&1 | head -60
