@@ -81,13 +81,49 @@ jobs:
           # set for BOTH halves - here, and in the config's e2e.env - or the two
           # look in different places, which is the bug restated.
           PLAYWRIGHT_BROWSERS_PATH: "0"
+          PW_DEPS_DIR: ${{ github.workspace }}/.pw-deps
         run: |
           npm ci
-          # `--with-deps` needs sudo, which a self-hosted runner may not grant.
-          # Falling back keeps the run alive: the browser still installs, and a
-          # missing system library then surfaces at cove2e instead of here.
+          # `--with-deps` needs sudo. MEASURED on builder-1: the runner user has
+          # none ("sudo: I'm sorry gh-runner. I'm afraid I can't do that"), so
+          # the browser installed WITHOUT its system libraries and then died at
+          # launch on `libnspr4.so: cannot open shared object file` - 3h into the
+          # run, at the last stage that had never been reached.
           npx playwright install --with-deps chromium || npx playwright install chromium
+          # NO-ROOT FALLBACK for the libraries. `dpkg -x` unpacks into a
+          # directory we own, and the dynamic loader finds them through
+          # LD_LIBRARY_PATH - neither step needs privilege. The package list
+          # comes from playwright itself rather than a list I typed, so it
+          # tracks the browser build.
+          if ! ldd node_modules/playwright-core/.local-browsers/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell 2>/dev/null | grep -q "not found"; then
+            echo "chromium's libraries are already present - nothing to do"
+          else
+            echo "chromium is missing libraries and we have no root; unpacking them locally"
+            pkgs="$(npx playwright install-deps --dry-run chromium 2>/dev/null | tr ' ' '\n' | grep -E '^lib[a-z0-9.+-]+$' | sort -u | tr '\n' ' ')"
+            [ -n "$pkgs" ] || pkgs="libnspr4 libnss3 libnssutil3 libsmime3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64"
+            echo "  packages: $pkgs"
+            # NOTHING HERE MAY FAIL THE STEP. GitHub runs `bash -e`, and
+            # MEASURED: `apt-get download` exits non-zero for a package this
+            # release does not ship separately (libnssutil3 and libsmime3 come
+            # inside libnss3 on noble), which killed the whole step on a runner
+            # that did not even need the unpack. A best-effort remedy that can
+            # abort the run is worse than no remedy.
+            (
+              mkdir -p "$PW_DEPS_DIR" && cd "$PW_DEPS_DIR" || exit 0
+              for one in $pkgs; do apt-get download "$one" 2>/dev/null || echo "    skip $one"; done
+              for d in *.deb; do [ -f "$d" ] || continue; dpkg -x "$d" . || true; done
+              echo "  unpacked $(find . -name '*.so*' 2>/dev/null | wc -l) shared objects into $PW_DEPS_DIR"
+            ) || echo "  local unpack did not complete - the browser may still fail to launch"
+          fi
       - name: build baseline
+        env:
+          # SCOPED TO THIS STEP, not the job. LD_LIBRARY_PATH takes PRECEDENCE
+          # over the system paths, so a directory holding a conflicting copy of
+          # a common library would change what every other child links against.
+          # It carries chromium's own dependencies only, and it is empty unless
+          # the step above had to unpack them. chainstrip spreads process.env
+          # into its children, so it reaches the browser without a config field.
+          LD_LIBRARY_PATH: ${{ github.workspace }}/.pw-deps/usr/lib/x86_64-linux-gnu:${{ github.workspace }}/.pw-deps/lib/x86_64-linux-gnu
         run: $CHAINSTRIP run
       - name: cache the gate baseline
         uses: actions/cache/save@v4
