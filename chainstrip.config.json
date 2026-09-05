@@ -1,17 +1,80 @@
 {
   "target": "webapp",
   "stateDir": ".chainstrip",
-  "sandbox": { "mode": "enforce", "allowDegraded": true },
-  "testCommand": ["npm", "run", "test", "--"],
+  "sandbox": {
+    "mode": "enforce",
+    "allowDegraded": true
+  },
+  "testCommand": [
+    "npm",
+    "run",
+    "test",
+    "--"
+  ],
   "testCwd": "channels",
   "testRunner": "jest",
-  "buildCommand": ["npm", "run", "build"],
+  "buildCommand": [
+    "npm",
+    "run",
+    "build"
+  ],
   "buildCwd": "channels",
   "covtoolchain": {
-    "commands": [["npm", "run", "build"]],
+    "commands": [
+      [
+        "npm",
+        "run",
+        "build"
+      ]
+    ],
     "cwd": "channels"
   },
   "update": {
-    "block": ["retained-surface-changed", "validation-regression", "capability-escalation", "manual-review-required", "expanded-usage-vulnerable", "new-dependency", "reachable-cve"]
+    "block": [
+      "retained-surface-changed",
+      "validation-regression",
+      "capability-escalation",
+      "manual-review-required",
+      "expanded-usage-vulnerable",
+      "new-dependency",
+      "reachable-cve"
+    ]
+  },
+  "e2e": {
+    "servicesUp": [
+      "bash",
+      "deploy/services.sh",
+      "up"
+    ],
+    "servicesDown": [
+      "bash",
+      "deploy/services.sh",
+      "down"
+    ],
+    "buildCommand": [
+      "npm",
+      "run",
+      "build"
+    ],
+    "buildCwd": "channels",
+    "readyUrl": "http://localhost:8065/api/v4/system/ping",
+    "testCommand": [
+      "npm",
+      "run",
+      "test:smoke"
+    ],
+    "testCwd": "../e2e-tests/playwright",
+    "env": {
+      "PW_BASE_URL": "http://localhost:8065",
+      "PW_HEADLESS": "true"
+    },
+    "browserCoverage": true,
+    "assets": [
+      {
+        "urlPrefix": "/static/",
+        "dir": "channels/dist"
+      }
+    ],
+    "sourceRoot": "channels"
   }
 }
