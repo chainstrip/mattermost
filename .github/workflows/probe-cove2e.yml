@@ -56,7 +56,7 @@ jobs:
           echo "missing libraries BEFORE:"; ldd "$BIN" 2>/dev/null | grep "not found" || echo "  none"
           if ldd "$BIN" 2>/dev/null | grep -q "not found"; then
             pkgs="$(npx playwright install-deps --dry-run chromium 2>/dev/null | tr ' ' '\n' | grep -E '^lib[a-z0-9.+-]+$' | sort -u | tr '\n' ' ')"
-            [ -n "$pkgs" ] || pkgs="libnspr4 libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64"
+            [ -n "$pkgs" ] || pkgs="libnspr4 libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 libcups2t64 libdrm2 libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64 libx11-6 libxcb1 libxext6 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libxshmfence1 libexpat1 libxcb-dri3-0"
             (
               mkdir -p "$PW_DEPS_DIR" && cd "$PW_DEPS_DIR" || exit 0
               for one in $pkgs; do apt-get download "$one" 2>/dev/null || echo "    skip $one"; done
@@ -65,6 +65,11 @@ jobs:
             ) || echo "  local unpack did not complete"
             export LD_LIBRARY_PATH="$PW_DEPS_DIR/usr/lib/x86_64-linux-gnu:$PW_DEPS_DIR/lib/x86_64-linux-gnu"
             echo "missing libraries AFTER:"; ldd "$BIN" 2>/dev/null | grep "not found" || echo "  none"
+            # `ldd` NAMES ONLY THE DIRECT DEPENDENCIES IT CANNOT RESOLVE, and a
+            # clean `ldd` is not proof the browser starts: MEASURED, it reported
+            # none missing and chromium then died on libXcomposite.so.1, which it
+            # reaches transitively. So LAUNCH ONE before believing the check.
+            node -e "const{chromium}=require('playwright-core');chromium.launch().then(async b=>{await b.close();console.log('  browser launches: OK')}).catch(e=>{console.log('  browser STILL fails:',String(e).split('\n').find(l=>/shared librar|Error/.test(l))||String(e).slice(0,160))})" || true
           fi
       - name: probe/restore-state
         uses: actions/cache/restore@v4
