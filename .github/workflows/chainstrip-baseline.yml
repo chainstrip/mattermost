@@ -94,7 +94,16 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: baseline-report
-          path: .chainstrip/*-report.json
+          # THE LOGS COME TOO. Every stage message that names a log file says so
+          # because the console shows a 25-line slice and the file has the rest -
+          # and for a node crash the informative line is the FIRST one, which a
+          # tail never contains. Measured 2026-09-05: cove2e's suite died with
+          # MODULE_NOT_FOUND, the console showed the stack and the requireStack
+          # array, and the line naming the missing module was in a file this
+          # artifact did not carry. Diagnosing it took a separate probe run.
+          path: |
+            .chainstrip/*-report.json
+            .chainstrip/*.log
           # .chainstrip is a DOT-directory, and the action skips hidden paths by
           # default: without this every "baseline-report" artifact uploaded zero
           # files and the step still reported success (if-no-files-found: ignore).
