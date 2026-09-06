@@ -1,0 +1,228 @@
+name: chainstrip campaign (on a runner holding a finished baseline)
+
+# THE WITNESS CAMPAIGN WITHOUT THE HOURS-LONG RUN IN FRONT OF IT. A campaign
+# needs only what a finished `chainstrip run` leaves in `.chainstrip` - the
+# sweep report, the extracted deps, the impact map - and on a self-hosted
+# runner that state is still on disk after the baseline job, until the next
+# checkout's `git clean -ffdx` removes it. So this job checks out WITHOUT
+# cleaning and must land on the runner that ran the baseline: pass its label
+# as `runner` (a label added to that one runner; `bench` here). Landing
+# anywhere else finds no state and stops before spending anything.
+#
+# MEASURED 2026-09-06: the first campaigns were dispatched as full baselines
+# because the state had not been kept, at 3h42m (mattermost) and 1h34m
+# (rocket.chat) of runner time per campaign. This is the cheaper door.
+#
+# Same concurrency group as the baseline, so the two never overlap on a repo.
+
+on:
+  # DISPATCH ONLY. A baseline is a MEASUREMENT that occupies a runner for an
+  # hour or more, and nothing about a push tells you a measurement is wanted
+  # now. The `paths-ignore` lists this replaces were a partial fix for the same
+  # problem — they grew after a probe push started a full baseline 6 seconds
+  # before the probe was dispatched, leaving the measurement queued behind it —
+  # but they could not cover the case that kept recurring: editing THIS file.
+  # Every workflow fix (the artifact upload, the corepack ordering, the node
+  # bootstrap) started an unwanted baseline, twice landing two runs of the same
+  # target at once.
+  #
+  # The old argument for keeping the push trigger was that a change to this file
+  # DOES change the run. True, and it does not follow that the run should start
+  # by itself: the person editing it is the person who knows whether a fresh
+  # measurement is worth an hour of the box.
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "runs-on label of the runner holding the finished baseline (e.g. bench)"
+        required: true
+        default: "bench"
+
+concurrency:
+  group: chainstrip-baseline
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 420 # the campaign and one rerun
+    permissions:
+      contents: read
+      packages: read # read @chainstrip/cli from GitHub Packages with the ambient token
+    env:
+      CHAINSTRIP_RUN_ORIGIN: ci
+      NODE_OPTIONS: --max_old_space_size=5120 # what the webapp's own CI gives jest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # KEEP THE BASELINE'S STATE. The default cleans untracked files, and
+          # .chainstrip is untracked - that is the whole point of this job.
+          clean: false
+      - uses: ./.github/actions/webapp-setup # node from .nvmrc + npm install + platform packages
+      - uses: ./.github/actions/setup-chainstrip
+        with:
+          version: ${{ vars.CHAINSTRIP_CLI_VERSION || 'latest' }}
+          # chainstrip.config.json says `"sandbox": {"mode": "enforce"}`, and
+          # enforce without a launcher REFUSES the run rather than quietly
+          # degrading — so this is not optional decoration, it is what makes the
+          # config runnable. The variable lets the launcher be pinned or dropped
+          # without editing the workflow; blank means no containment.
+          csbox: ${{ vars.CHAINSTRIP_CSBOX_PACKAGE || '@chainstrip/csbox-linux-x64@0.1.0' }}
+          # Set CHAINSTRIP_CSBOX_PATH while the package is unreadable to this
+          # repo's token; clearing it goes back to the npm install.
+          csbox_path: ${{ vars.CHAINSTRIP_CSBOX_PATH }}
+      # cove2e runs the target's OWN e2e suite, and `e2e-tests/playwright` is a
+      # SEPARATE npm project that `webapp-setup` does not touch. Without this the
+      # suite dies before its first spec with a command-not-found, which is the
+      # incident CLAUDE.md records for 2026-08-25 ("rollup: command not found",
+      # exit 127) — and an e2e suite that never RAN captures nothing, so covtrim
+      # loses every function only a browser executes.
+      #
+      # Browsers are installed explicitly instead of through the project's
+      # postinstall, which fetches chromium AND firefox. `test:smoke` runs
+      # `--project=chrome`, so firefox is download time nothing uses.
+      - name: ci/e2e-playwright-setup
+        working-directory: e2e-tests/playwright
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+          # INSTALL THE BROWSER WHERE THE CHILD WILL LOOK. Playwright resolves
+          # its browsers under $HOME/.cache/ms-playwright, and cove2e's suite
+          # child runs with the SANDBOX home - so a browser installed into the
+          # runner's real home is invisible to it. MEASURED 2026-09-05: the
+          # suite ran, reached its setup specs, and every one failed with
+          # "Executable doesn't exist at
+          # .chainstrip/sandbox/home/.cache/ms-playwright/chromium_headless_shell-1228/...".
+          #
+          # `0` is playwright's own answer: keep the browser inside
+          # node_modules, which is a directory the child already has. It must be
+          # set for BOTH halves - here, and in the config's e2e.env - or the two
+          # look in different places, which is the bug restated.
+          PLAYWRIGHT_BROWSERS_PATH: "0"
+          PW_DEPS_DIR: ${{ github.workspace }}/.pw-deps
+        run: |
+          npm ci
+          # `--with-deps` needs sudo. MEASURED on builder-1: the runner user has
+          # none ("sudo: I'm sorry gh-runner. I'm afraid I can't do that"), so
+          # the browser installed WITHOUT its system libraries and then died at
+          # launch on `libnspr4.so: cannot open shared object file` - 3h into the
+          # run, at the last stage that had never been reached.
+          npx playwright install --with-deps chromium || npx playwright install chromium
+          # NO-ROOT FALLBACK for the libraries. `dpkg -x` unpacks into a
+          # directory we own, and the dynamic loader finds them through
+          # LD_LIBRARY_PATH - neither step needs privilege. The package list
+          # comes from playwright itself rather than a list I typed, so it
+          # tracks the browser build.
+          if ! ldd node_modules/playwright-core/.local-browsers/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell 2>/dev/null | grep -q "not found"; then
+            echo "chromium's libraries are already present - nothing to do"
+          else
+            echo "chromium is missing libraries and we have no root; unpacking them locally"
+            pkgs="$(npx playwright install-deps --dry-run chromium 2>/dev/null | tr ' ' '\n' | grep -E '^lib[a-z0-9.+-]+$' | sort -u | tr '\n' ' ')"
+            [ -n "$pkgs" ] || pkgs="libnspr4 libnss3 libnssutil3 libsmime3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libdrm2 libgbm1 libxkbcommon0 libpango-1.0-0 libcairo2 libasound2t64"
+            echo "  packages: $pkgs"
+            # NOTHING HERE MAY FAIL THE STEP. GitHub runs `bash -e`, and
+            # MEASURED: `apt-get download` exits non-zero for a package this
+            # release does not ship separately (libnssutil3 and libsmime3 come
+            # inside libnss3 on noble), which killed the whole step on a runner
+            # that did not even need the unpack. A best-effort remedy that can
+            # abort the run is worse than no remedy.
+            (
+              mkdir -p "$PW_DEPS_DIR" && cd "$PW_DEPS_DIR" || exit 0
+              for one in $pkgs; do apt-get download "$one" 2>/dev/null || echo "    skip $one"; done
+              for d in *.deb; do [ -f "$d" ] || continue; dpkg -x "$d" . || true; done
+              echo "  unpacked $(find . -name '*.so*' 2>/dev/null | wc -l) shared objects into $PW_DEPS_DIR"
+            ) || echo "  local unpack did not complete - the browser may still fail to launch"
+          fi
+      - name: the finished baseline this runner holds
+        run: |
+          for f in .chainstrip/sweep-report.json .chainstrip/covtrim-report.json .chainstrip/test-impact-map.json .chainstrip/inventory.json; do
+            [ -f "$f" ] || { echo "::error::$f is missing - this runner ($RUNNER_NAME) holds no finished baseline; dispatch with the label of the runner that ran it"; exit 1; }
+          done
+          [ -d .chainstrip/extracted-deps ] || { echo "::error::.chainstrip/extracted-deps is missing on $RUNNER_NAME"; exit 1; }
+          node -e "const s=require('./.chainstrip/sweep-report.json');console.log('baseline on '+process.env.RUNNER_NAME+': sweep '+s.generatedAt+', tool '+(s.toolVersion||'?')+', counts '+JSON.stringify(s.counts))"
+
+      # WHAT FOLLOWS THE RUN, in the order the operating model names them:
+      # coverage --prompt, witness campaign, rerun. Each rerun is conditional and
+      # says why it ran or did not.
+      #
+      # `coverage --prompt` writes the test-writing worklist
+      # (.chainstrip/coverage-prompt.md) for a person or an agent session. Nothing
+      # in this job consumes it, so no test file is added here and the rerun that
+      # would follow new tests is never necessary in CI. The prompt ships in the
+      # report artifact instead.
+
+      # The campaign is the LLM-driven evidence gatherer. Its key lives in the repo
+      # secret ANTHROPIC_API_KEY; the config's witness.llm.apiKeyEnv names it and
+      # the key is never in config. A missing secret is reported, not papered
+      # over: the step is skipped by name, and the rerun below has nothing to act on.
+      - name: witness campaign
+        id: witness
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::warning title=witness campaign skipped::repo secret ANTHROPIC_API_KEY is not set (witness.llm.apiKeyEnv names it). Add it with: gh secret set ANTHROPIC_API_KEY -R ${{ github.repository }}, then re-dispatch."
+            echo "accepted=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          $CHAINSTRIP witness --campaign
+          accepted="$(node -e "const r=require('./.chainstrip/witness-report.json');console.log((r.probes||[]).filter(p=>p.verdict==='accepted').length)")"
+          echo "accepted probes: $accepted"
+          echo "accepted=$accepted" >> "$GITHUB_OUTPUT"
+
+      # A rerun is necessary exactly when the campaign accepted a probe. An accepted
+      # probe joins per-dep validation only on the NEXT sweep - that is what turns a
+      # no-mapped-tests dep into a validated extraction - and covtrim unions the
+      # witness capture on that run. Zero accepted probes change nothing, so the
+      # rerun is skipped. trace auto-skips on a current test-impact map.
+      - name: rerun with the witness evidence
+        if: steps.witness.outputs.accepted != 'skipped' && steps.witness.outputs.accepted != '0'
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/.pw-deps/usr/lib/x86_64-linux-gnu:${{ github.workspace }}/.pw-deps/lib/x86_64-linux-gnu
+        run: $CHAINSTRIP run
+
+      # The prompt ranks CVE-bearing deps first ONLY when a reachability report
+      # exists; without one it says so and ranks by coverage alone (measured on the
+      # first rocket.chat run: "no reachability report - CVE prioritization is
+      # MISSING"). reachability is the OSV rescan over the artifact just packed -
+      # about a minute, network to OSV, report-only. It degrades to an empty
+      # advisory set offline and the prompt still writes.
+      - name: reachability (CVE rescan for the prompt's ranking)
+        run: $CHAINSTRIP reachability
+
+      - name: coverage prompt
+        run: $CHAINSTRIP coverage --prompt
+      - name: cache the gate baseline
+        uses: actions/cache/save@v4
+        with:
+          key: chainstrip-baseline-${{ hashFiles('webapp/package-lock.json') }}
+          # exactly the set the gate reads — NOT .chainstrip/workspaces|bundles|runs
+          path: |
+            .chainstrip/artifacts
+            .chainstrip/extracted-deps
+            .chainstrip/inventory.json
+            .chainstrip/tiers.json
+            .chainstrip/test-impact-map.json
+            .chainstrip/covtrim-report.json
+            .chainstrip/fileprune-report.json
+      - name: upload human-readable report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-report
+          # THE LOGS COME TOO. Every stage message that names a log file says so
+          # because the console shows a 25-line slice and the file has the rest -
+          # and for a node crash the informative line is the FIRST one, which a
+          # tail never contains. Measured 2026-09-05: cove2e's suite died with
+          # MODULE_NOT_FOUND, the console showed the stack and the requireStack
+          # array, and the line naming the missing module was in a file this
+          # artifact did not carry. Diagnosing it took a separate probe run.
+          path: |
+            .chainstrip/*-report.json
+            .chainstrip/*.log
+            .chainstrip/coverage-prompt.md
+            .chainstrip/witness-*.json
+            .chainstrip/witness-prompt.md
+          # .chainstrip is a DOT-directory, and the action skips hidden paths by
+          # default: without this every "baseline-report" artifact uploaded zero
+          # files and the step still reported success (if-no-files-found: ignore).
+          include-hidden-files: true
+          if-no-files-found: ignore
