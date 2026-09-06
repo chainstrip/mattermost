@@ -32,7 +32,7 @@ concurrency:
 jobs:
   warm:
     runs-on: ${{ vars.CHAINSTRIP_LARGE_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 330
+    timeout-minutes: 720 # a run, the campaign, and a possible rerun
     permissions:
       contents: read
       packages: read # read @chainstrip/cli from GitHub Packages with the ambient token
@@ -125,6 +125,48 @@ jobs:
           # into its children, so it reaches the browser without a config field.
           LD_LIBRARY_PATH: ${{ github.workspace }}/.pw-deps/usr/lib/x86_64-linux-gnu:${{ github.workspace }}/.pw-deps/lib/x86_64-linux-gnu
         run: $CHAINSTRIP run
+
+      # WHAT FOLLOWS THE RUN, in the order the operating model names them:
+      # coverage --prompt, witness campaign, rerun. Each rerun is conditional and
+      # says why it ran or did not.
+      #
+      # `coverage --prompt` writes the test-writing worklist
+      # (.chainstrip/coverage-prompt.md) for a person or an agent session. Nothing
+      # in this job consumes it, so no test file is added here and the rerun that
+      # would follow new tests is never necessary in CI. The prompt ships in the
+      # report artifact instead.
+      - name: coverage prompt
+        run: $CHAINSTRIP coverage --prompt
+
+      # The campaign is the LLM-driven evidence gatherer. Its key lives in the repo
+      # secret ANTHROPIC_API_KEY; the config's witness.llm.apiKeyEnv names it and
+      # the key is never in config. A missing secret is reported, not papered
+      # over: the step is skipped by name, and the rerun below has nothing to act on.
+      - name: witness campaign
+        id: witness
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::warning title=witness campaign skipped::repo secret ANTHROPIC_API_KEY is not set (witness.llm.apiKeyEnv names it). Add it with: gh secret set ANTHROPIC_API_KEY -R ${{ github.repository }}, then re-dispatch."
+            echo "accepted=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          $CHAINSTRIP witness --campaign
+          accepted="$(node -e "const r=require('./.chainstrip/witness-report.json');console.log((r.probes||[]).filter(p=>p.verdict==='accepted').length)")"
+          echo "accepted probes: $accepted"
+          echo "accepted=$accepted" >> "$GITHUB_OUTPUT"
+
+      # A rerun is necessary exactly when the campaign accepted a probe. An accepted
+      # probe joins per-dep validation only on the NEXT sweep - that is what turns a
+      # no-mapped-tests dep into a validated extraction - and covtrim unions the
+      # witness capture on that run. Zero accepted probes change nothing, so the
+      # rerun is skipped. trace auto-skips on a current test-impact map.
+      - name: rerun with the witness evidence
+        if: steps.witness.outputs.accepted != 'skipped' && steps.witness.outputs.accepted != '0'
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/.pw-deps/usr/lib/x86_64-linux-gnu:${{ github.workspace }}/.pw-deps/lib/x86_64-linux-gnu
+        run: $CHAINSTRIP run
       - name: cache the gate baseline
         uses: actions/cache/save@v4
         with:
@@ -153,6 +195,9 @@ jobs:
           path: |
             .chainstrip/*-report.json
             .chainstrip/*.log
+            .chainstrip/coverage-prompt.md
+            .chainstrip/witness-*.json
+            .chainstrip/witness-prompt.md
           # .chainstrip is a DOT-directory, and the action skips hidden paths by
           # default: without this every "baseline-report" artifact uploaded zero
           # files and the step still reported success (if-no-files-found: ignore).

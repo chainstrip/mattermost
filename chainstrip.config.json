@@ -78,6 +78,15 @@
         "dir": "channels/dist"
       }
     ],
-    "sourceRoot": "channels"
+    "sourceRoot": "channels",
+    "gate": "report"
+  },
+  "witness": {
+    "llm": {
+      "provider": "anthropic",
+      "model": "claude-sonnet-5",
+      "apiKeyEnv": "ANTHROPIC_API_KEY"
+    },
+    "probeDir": "channels/.chainstrip-probes"
   }
 }
