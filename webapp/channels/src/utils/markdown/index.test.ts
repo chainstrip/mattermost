@@ -1,7 +1,9 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
-import {format} from './index';
+import {format, formatWithRenderer} from 'utils/markdown';
+import RemoveMarkdown from 'utils/markdown/remove_markdown';
+import Renderer from 'utils/markdown/renderer';
 
 describe('format', () => {
     const htmlOutput = '<div data-codeblock-code="{code}" data-codeblock-language="{language}" data-codeblock-searchedcontent=""></div>';
@@ -181,5 +183,93 @@ this is long text this is long text this is long text this is long text this is 
             const output = format(testCase.input, {unsafeLinks: true, siteURL: 'http://my.site.com'});
             expect(output).toEqual(testCase.expected);
         }
+    });
+});
+
+describe('format tables', () => {
+    // GFM tables are rendered through marked's table tokenizer and the app's Renderer, whose
+    // tablecell override delegates to marked.Renderer.prototype.tablecell and trims the trailing
+    // newline marked appends to every cell.
+    test('should render a table with per-column alignment', () => {
+        const input = [
+            '| Name | Count |',
+            '|:-----|------:|',
+            '| foo  | 1     |',
+            '| bar  | 22    |',
+        ].join('\n');
+
+        const output = format(input);
+
+        expect(output).toBe(
+            '<div class="table-responsive"><table class="markdown__table">' +
+            '<thead><tr><th style="text-align:left">Name</th><th style="text-align:right">Count</th></tr></thead>' +
+            '<tbody><tr><td style="text-align:left">foo</td><td style="text-align:right">1</td></tr>' +
+            '<tr><td style="text-align:left">bar</td><td style="text-align:right">22</td></tr></tbody>' +
+            '</table></div>',
+        );
+    });
+
+    test('should render unaligned cells without a style attribute and centered cells with one', () => {
+        const input = [
+            '| a | b |',
+            '|---|:-:|',
+            '| 1 | 2 |',
+        ].join('\n');
+
+        const output = format(input);
+
+        expect(output).toContain('<thead><tr><th>a</th><th style="text-align:center">b</th></tr></thead>');
+        expect(output).toContain('<tbody><tr><td>1</td><td style="text-align:center">2</td></tr></tbody>');
+
+        // Every cell is trimmed, so marked's per-cell newline never reaches the output.
+        expect(output).not.toContain('\n');
+    });
+
+    test('should render inline markdown inside table cells', () => {
+        const input = [
+            '| Style |',
+            '|-------|',
+            '| **bold** and `code` |',
+        ].join('\n');
+
+        const output = format(input);
+
+        expect(output).toContain('<td><strong>bold</strong> and <span class="codespan__pre-wrap"><code>code</code></span></td>');
+    });
+});
+
+describe('formatWithRenderer', () => {
+    test('should render headings, emphasis and horizontal rules through the app renderer', () => {
+        const renderer = new Renderer({}, {});
+
+        const output = formatWithRenderer('# Title\n\nsome *emphasis* and ~~strike~~\n\n---', renderer);
+
+        expect(output).toContain('<h1 class="markdown__heading">Title</h1>');
+        expect(output).toContain('<em>emphasis</em>');
+        expect(output).toContain('<del>strike</del>');
+        expect(output).toContain('<hr>');
+    });
+
+    test('should render block quotes, keeping soft line breaks as newlines', () => {
+        const renderer = new Renderer({}, {});
+
+        const output = formatWithRenderer('> quoted\n> text', renderer);
+
+        expect(output).toBe('<blockquote>\n<p>quoted\ntext</p>\n</blockquote>');
+    });
+
+    test('should sanitize raw HTML instead of passing it through', () => {
+        const renderer = new Renderer({}, {});
+
+        const output = formatWithRenderer('<script>alert(1)</script> plain', renderer);
+
+        expect(output).not.toContain('<script>');
+        expect(output).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    });
+
+    test('should honour the renderer passed in rather than the default one', () => {
+        const output = formatWithRenderer('**bold** and [a link](https://example.com)', new RemoveMarkdown());
+
+        expect(output).toBe('bold and a link');
     });
 });

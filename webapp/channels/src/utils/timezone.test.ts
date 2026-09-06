@@ -8,6 +8,7 @@ import {
     getCurrentMomentForTimezone,
     getUtcOffsetForTimeZone,
     isValidTimezone,
+    parseDateInTimezone,
 } from './timezone';
 
 describe('timezone', () => {
@@ -93,5 +94,47 @@ describe('timezone', () => {
             expect(isValidTimezone('Not/A_Zone')).toBe(false);
             expect(isValidTimezone('')).toBe(false);
         });
+    });
+});
+
+describe('parseDateInTimezone', () => {
+    test('should parse an ISO datetime as an absolute instant when no timezone is given', () => {
+        const parsed = parseDateInTimezone('2025-01-15T14:30:00Z');
+
+        expect(parsed).not.toBeNull();
+        expect(parsed!.toISOString()).toBe('2025-01-15T14:30:00.000Z');
+    });
+
+    test('should ignore a timezone that moment does not know', () => {
+        const parsed = parseDateInTimezone('2025-01-15T14:30:00Z', 'Not/AZone');
+
+        expect(parsed).not.toBeNull();
+        expect(parsed!.toISOString()).toBe('2025-01-15T14:30:00.000Z');
+    });
+
+    test('should treat a date-only string as midnight in the target timezone', () => {
+        const parsed = parseDateInTimezone('2025-01-15', 'America/New_York');
+
+        expect(parsed).not.toBeNull();
+        expect(parsed!.format('YYYY-MM-DD HH:mm')).toBe('2025-01-15 00:00');
+        expect(parsed!.utcOffset()).toBe(-300);
+        expect(parsed!.toISOString()).toBe('2025-01-15T05:00:00.000Z');
+    });
+
+    test('should convert a UTC datetime string into the target timezone', () => {
+        const parsed = parseDateInTimezone('2025-01-15T14:30:00Z', 'America/New_York');
+
+        expect(parsed).not.toBeNull();
+        expect(parsed!.format('YYYY-MM-DD HH:mm')).toBe('2025-01-15 09:30');
+        expect(parsed!.toISOString()).toBe('2025-01-15T14:30:00.000Z');
+
+        const tokyo = parseDateInTimezone('2025-01-15T14:30:00Z', 'Asia/Tokyo');
+        expect(tokyo!.format('YYYY-MM-DD HH:mm')).toBe('2025-01-15 23:30');
+    });
+
+    test('should return null for an impossible calendar date', () => {
+        expect(parseDateInTimezone('2025-02-30')).toBeNull();
+        expect(parseDateInTimezone('2025-02-30', 'America/New_York')).toBeNull();
+        expect(parseDateInTimezone('2025-02-30T10:00:00Z', 'America/New_York')).toBeNull();
     });
 });

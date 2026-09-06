@@ -1,6 +1,8 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {REHYDRATE} from 'redux-persist';
+
 import storageReducer from 'reducers/storage';
 
 import {StorageTypes} from 'utils/constants';
@@ -132,5 +134,45 @@ describe('Reducers.Storage', () => {
             },
         );
         expect(nextState.storage).toEqual({test: '456', test2: '789'});
+    });
+});
+
+describe('Reducers.Storage rehydration', () => {
+    it('should restore persisted items and revive their timestamps as Date objects', () => {
+        const nextState = storageReducer(
+            {
+                storage: {
+                    existing: {value: 'kept', timestamp: new Date('2024-01-01T00:00:00.000Z')},
+                },
+            } as ReducerState,
+            {
+                type: REHYDRATE,
+                key: 'storage',
+                payload: {
+                    restored: {value: 'restored value', timestamp: '2024-02-03T04:05:06.000Z'},
+                    untimed: {value: 'no timestamp'},
+                },
+            } as any,
+        );
+
+        expect(nextState.storage.existing).toEqual({value: 'kept', timestamp: new Date('2024-01-01T00:00:00.000Z')});
+        expect(nextState.storage.restored.value).toBe('restored value');
+        expect(nextState.storage.restored.timestamp).toBeInstanceOf(Date);
+        expect((nextState.storage.restored.timestamp as Date).toISOString()).toBe('2024-02-03T04:05:06.000Z');
+        expect(nextState.storage.untimed).toEqual({value: 'no timestamp'});
+    });
+
+    it('should ignore rehydration for other persisted keys and empty payloads', () => {
+        const initial = {
+            storage: {
+                existing: {value: 'kept', timestamp: new Date()},
+            },
+        } as ReducerState;
+
+        const otherKey = storageReducer(initial, {type: REHYDRATE, key: 'other', payload: {x: {value: 1}}} as any);
+        expect(otherKey.storage).toBe(initial.storage);
+
+        const noPayload = storageReducer(initial, {type: REHYDRATE, key: 'storage', payload: undefined} as any);
+        expect(noPayload.storage).toBe(initial.storage);
     });
 });

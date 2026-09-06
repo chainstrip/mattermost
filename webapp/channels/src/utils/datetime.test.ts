@@ -6,6 +6,7 @@ import moment from 'moment';
 import {
     getDiff,
     isToday,
+    isWithinLastWeek,
     isYesterday,
     relativeFormatDate,
 } from './datetime';
@@ -199,5 +200,34 @@ describe('relativeFormatDate', () => {
         const result = relativeFormatDate(moment('2025-01-01T08:00:00Z'), formatMessage as any, 'yyyy-MM-dd');
         expect(result).toBe('2025-01-01');
         expect(formatMessage).not.toHaveBeenCalled();
+    });
+});
+
+describe('isWithinLastWeek', () => {
+    beforeEach(() => {
+        jest.useFakeTimers();
+
+        // The runner pins TZ=Etc/UTC, so "start of day" boundaries below are UTC midnights.
+        jest.setSystemTime(new Date('2025-06-15T12:00:00.000Z'));
+    });
+
+    afterEach(() => {
+        jest.useRealTimers();
+    });
+
+    test('should include now and the future', () => {
+        expect(isWithinLastWeek(new Date('2025-06-15T12:00:00.000Z'))).toBe(true);
+        expect(isWithinLastWeek(new Date('2025-06-20T00:00:00.000Z'))).toBe(true);
+    });
+
+    test('should include any moment after the start of the day six days ago', () => {
+        expect(isWithinLastWeek(new Date('2025-06-09T00:00:00.001Z'))).toBe(true);
+        expect(isWithinLastWeek(new Date('2025-06-12T23:59:59.000Z'))).toBe(true);
+    });
+
+    test('should exclude the start of that day and anything before it', () => {
+        expect(isWithinLastWeek(new Date('2025-06-09T00:00:00.000Z'))).toBe(false);
+        expect(isWithinLastWeek(new Date('2025-06-08T23:59:59.999Z'))).toBe(false);
+        expect(isWithinLastWeek(new Date('2025-05-01T12:00:00.000Z'))).toBe(false);
     });
 });

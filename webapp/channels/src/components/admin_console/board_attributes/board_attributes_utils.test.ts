@@ -1,7 +1,14 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import {act} from '@testing-library/react';
+
 import type {PropertyFieldOption} from '@mattermost/types/properties';
+import type {BoardsPropertyField} from '@mattermost/types/properties_board';
+
+import {Client4} from 'mattermost-redux/client';
+
+import {renderHookWithContext, waitFor} from 'tests/react_testing_utils';
 
 import {
     isCreatePending,
@@ -11,6 +18,10 @@ import {
     newPendingBoardField,
     newPendingId,
     stripPendingOptionIds,
+    useBoardPropertyFields,
+    ValidationWarningNameRequired,
+    ValidationWarningNameTaken,
+    ValidationWarningNameUnique,
 } from './board_attributes_utils';
 
 describe('board_attributes_utils', () => {
@@ -194,5 +205,234 @@ describe('board_attributes_utils', () => {
             // Renaming option 1 to "Done" should still conflict with option 3
             expect(isOptionNameTaken('Done', options, options[0])).toBe(true);
         });
+    });
+});
+
+describe('useBoardPropertyFields', () => {
+    jest.useFakeTimers();
+    const getFields = jest.spyOn(Client4, 'getPropertyFields');
+    const patchField = jest.spyOn(Client4, 'patchPropertyField');
+    const deleteField = jest.spyOn(Client4, 'deletePropertyField');
+    const createField = jest.spyOn(Client4, 'createPropertyField');
+
+    const baseField: BoardsPropertyField = {
+        id: 'field-id',
+        name: 'field',
+        type: 'text',
+        group_id: 'boards',
+        object_type: 'post',
+        create_at: 1736541716295,
+        delete_at: 0,
+        update_at: 0,
+        created_by: '',
+        updated_by: '',
+        target_id: '',
+        target_type: 'system',
+        attrs: {sort_order: 0},
+    };
+
+    const systemField: BoardsPropertyField = {...baseField, id: 'system-status', name: 'Status', protected: true, attrs: {sort_order: 5}};
+    const field0: BoardsPropertyField = {...baseField, id: 'field-0', name: 'Priority', attrs: {sort_order: 0}};
+    const field1: BoardsPropertyField = {...baseField, id: 'field-1', name: 'Owner', type: 'user', attrs: {sort_order: 1}};
+    const field2: BoardsPropertyField = {...baseField, id: 'field-2', name: 'Due date', type: 'date', attrs: {sort_order: 2}};
+
+    beforeEach(() => {
+        getFields.mockReset();
+        patchField.mockReset();
+        deleteField.mockReset();
+        createField.mockReset();
+
+        // Return the fields deliberately out of order so the hook's sort is exercised.
+        getFields.mockResolvedValue([field2, field0, systemField, field1]);
+    });
+
+    async function renderLoaded() {
+        const rendered = renderHookWithContext(() => useBoardPropertyFields(), {});
+
+        act(() => {
+            jest.runAllTimers();
+        });
+        rendered.rerender();
+
+        await waitFor(() => {
+            const [, read] = rendered.result.current;
+            expect(read.loading).toBe(false);
+        });
+
+        return rendered;
+    }
+
+    test('should load the fields with protected ones first and the rest by sort order', async () => {
+        const {result} = await renderLoaded();
+
+        const [fields, read] = result.current;
+        expect(getFields).toHaveBeenCalledWith('boards', 'post', 'system');
+        expect(read.error).toBeUndefined();
+        expect(fields.order).toEqual([systemField.id, field0.id, field1.id, field2.id]);
+        expect(fields.data[field1.id]).toBe(field1);
+        expect(fields.warnings).toBeUndefined();
+    });
+
+    test('should warn when two pending fields share a name, ignoring case', async () => {
+        const {result, rerender} = await renderLoaded();
+
+        act(() => {
+            const [fields,,, ops] = result.current;
+            ops.update({...fields.data[field0.id], name: 'OWNER'});
+        });
+        rerender();
+
+        const [fields,, pendingIO] = result.current;
+        expect(pendingIO.hasChanges).toBe(true);
+        expect(fields.warnings).toEqual({
+            [field0.id]: {name: ValidationWarningNameUnique},
+            [field1.id]: {name: ValidationWarningNameUnique},
+        });
+    });
+
+    test('should warn when a pending name collides with a saved field, unless that field is being deleted', async () => {
+        const {result, rerender} = await renderLoaded();
+
+        // Free up the name "Owner" in the pending set, then claim it for another field. The pending
+        // set has no duplicate, but the saved set still has "Owner" on field1, so the name is taken.
+        act(() => {
+            const [fields,,, ops] = result.current;
+            ops.update({...fields.data[field1.id], name: 'Assignee'});
+        });
+        rerender();
+        act(() => {
+            const [fields,,, ops] = result.current;
+            ops.update({...fields.data[field0.id], name: 'owner'});
+        });
+        rerender();
+
+        const [fields1,, pendingIO] = result.current;
+        expect(pendingIO.hasChanges).toBe(true);
+        expect(fields1.warnings).toEqual({[field0.id]: {name: ValidationWarningNameTaken}});
+
+        // Once the field that holds the saved name is pending deletion, the conflict is gone.
+        act(() => {
+            const [,,, ops] = result.current;
+            ops.delete(field1.id);
+        });
+        rerender();
+
+        const [fields2] = result.current;
+        expect(fields2.data[field1.id].delete_at).not.toBe(0);
+        expect(fields2.warnings).toBeUndefined();
+    });
+
+    test('should give a new field a unique name and immediately drop it again when deleted before saving', async () => {
+        const {result, rerender} = await renderLoaded();
+
+        act(() => {
+            const [,,, ops] = result.current;
+            ops.create({name: 'Priority'});
+        });
+        rerender();
+
+        const [fields1] = result.current;
+        const createdId = fields1.order.find((id) => isPendingId(id))!;
+        expect(fields1.data[createdId].name).toBe('Priority (2)');
+        expect(fields1.data[createdId].attrs.sort_order).toBe(4);
+        expect(fields1.warnings).toBeUndefined();
+
+        act(() => {
+            const [,,, ops] = result.current;
+            ops.delete(createdId);
+        });
+        rerender();
+
+        const [fields2,, pendingIO] = result.current;
+        expect(fields2.data[createdId]).toBeUndefined();
+        expect(fields2.order).not.toContain(createdId);
+        expect(pendingIO.hasChanges).toBe(false);
+    });
+
+    test('should require a name and skip validation for protected fields', async () => {
+        const {result, rerender} = await renderLoaded();
+
+        act(() => {
+            const [fields,,, ops] = result.current;
+            ops.update({...fields.data[field2.id], name: ''});
+            ops.update({...fields.data[systemField.id], name: ''});
+        });
+        rerender();
+
+        const [fields] = result.current;
+        expect(fields.warnings).toEqual({[field2.id]: {name: ValidationWarningNameRequired}});
+    });
+
+    test('should commit an edit and clear pending changes when the server accepts it', async () => {
+        const {result, rerender} = await renderLoaded();
+
+        act(() => {
+            const [fields,,, ops] = result.current;
+            ops.update({...fields.data[field0.id], name: 'Severity'});
+        });
+        rerender();
+
+        const [fields, readIO, pendingIO] = result.current;
+        patchField.mockResolvedValue({...fields.data[field0.id]});
+
+        await act(async () => {
+            const data = await pendingIO.commit();
+            if (data) {
+                readIO.setData(data);
+            }
+            jest.runAllTimers();
+            rerender();
+        });
+
+        await waitFor(() => {
+            const [,, pending] = result.current;
+            expect(pending.saving).toBe(false);
+        });
+
+        expect(patchField).toHaveBeenCalledTimes(1);
+        expect(patchField).toHaveBeenCalledWith('boards', 'post', field0.id, {name: 'Severity', type: 'text', attrs: {sort_order: 0}});
+        expect(deleteField).not.toHaveBeenCalled();
+        expect(createField).not.toHaveBeenCalled();
+
+        const [fieldsAfter,, pendingAfter] = result.current;
+        expect(pendingAfter.hasChanges).toBe(false);
+        expect(pendingAfter.error).toBeUndefined();
+        expect(fieldsAfter.data[field0.id].name).toBe('Severity');
+        expect(fieldsAfter.errors).toBeUndefined();
+    });
+
+    test('should surface a per-field error and keep the change pending when the server rejects it', async () => {
+        const {result, rerender} = await renderLoaded();
+
+        act(() => {
+            const [fields,,, ops] = result.current;
+            ops.update({...fields.data[field0.id], name: 'Severity'});
+        });
+        rerender();
+
+        const [, readIO, pendingIO] = result.current;
+        const serverError = new Error('name already exists');
+        patchField.mockRejectedValue(serverError);
+
+        await act(async () => {
+            const data = await pendingIO.commit();
+            if (data) {
+                readIO.setData(data);
+            }
+            jest.runAllTimers();
+            rerender();
+        });
+
+        await waitFor(() => {
+            const [,, pending] = result.current;
+            expect(pending.saving).toBe(false);
+        });
+
+        const [fieldsAfter,, pendingAfter] = result.current;
+        expect(pendingAfter.hasChanges).toBe(true);
+        expect(pendingAfter.error).toBeDefined();
+        expect(pendingAfter.error?.message).toBe('error processing operations');
+        expect((pendingAfter.error?.cause as Record<string, unknown>)[field0.id]).toBe(serverError);
+        expect(fieldsAfter.data[field0.id].name).toBe('Severity');
     });
 });

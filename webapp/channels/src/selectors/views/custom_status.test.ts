@@ -8,7 +8,7 @@ import * as GeneralSelectors from 'mattermost-redux/selectors/entities/general';
 import * as PreferenceSelectors from 'mattermost-redux/selectors/entities/preferences';
 import * as UserSelectors from 'mattermost-redux/selectors/entities/users';
 
-import {makeGetCustomStatus, getRecentCustomStatuses, isCustomStatusEnabled, showStatusDropdownPulsatingDot, showPostHeaderUpdateStatusButton} from 'selectors/views/custom_status';
+import {makeGetCustomStatus, getRecentCustomStatuses, isCustomStatusEnabled, isCustomStatusExpired, showStatusDropdownPulsatingDot, showPostHeaderUpdateStatusButton} from 'selectors/views/custom_status';
 import configureStore from 'store';
 
 import {TestHelper} from 'utils/test_helper';
@@ -149,5 +149,56 @@ describe('showStatusDropdownPulsatingDot and showPostHeaderUpdateStatusButton', 
         newUser.props.customStatus = JSON.stringify(customStatus);
         (UserSelectors.getCurrentUser as jest.Mock).mockReturnValue(newUser);
         expect(showStatusDropdownPulsatingDot(store.getState())).toBeTruthy();
+    });
+});
+
+describe('isCustomStatusExpired', () => {
+    const user = TestHelper.getUserMock({
+        timezone: {
+            useAutomaticTimezone: 'false',
+            manualTimezone: 'America/New_York',
+            automaticTimezone: '',
+        },
+    });
+
+    beforeEach(() => {
+        jest.useFakeTimers();
+        jest.setSystemTime(new Date('2025-06-15T12:00:00.000Z'));
+        (UserSelectors.getCurrentUser as jest.Mock).mockReturnValue(user);
+    });
+
+    afterEach(() => {
+        jest.useRealTimers();
+    });
+
+    it('should treat a missing status as expired', async () => {
+        const store = await configureStore();
+        expect(isCustomStatusExpired(store.getState(), undefined)).toBe(true);
+    });
+
+    it('should never expire a status that is set to not clear', async () => {
+        const store = await configureStore();
+        const status = {...customStatus, duration: CustomStatusDuration.DONT_CLEAR, expires_at: '2020-01-01T00:00:00Z'};
+        expect(isCustomStatusExpired(store.getState(), status)).toBe(false);
+    });
+
+    it('should be expired once the current time reaches expires_at', async () => {
+        const store = await configureStore();
+
+        const past = {...customStatus, duration: CustomStatusDuration.DATE_AND_TIME, expires_at: '2025-06-15T11:59:59Z'};
+        expect(isCustomStatusExpired(store.getState(), past)).toBe(true);
+
+        const exactlyNow = {...customStatus, duration: CustomStatusDuration.DATE_AND_TIME, expires_at: '2025-06-15T12:00:00Z'};
+        expect(isCustomStatusExpired(store.getState(), exactlyNow)).toBe(true);
+    });
+
+    it('should not be expired while expires_at is still in the future', async () => {
+        const store = await configureStore();
+
+        const future = {...customStatus, duration: CustomStatusDuration.DATE_AND_TIME, expires_at: '2025-06-15T12:00:01Z'};
+        expect(isCustomStatusExpired(store.getState(), future)).toBe(false);
+
+        const nextWeek = {...customStatus, duration: CustomStatusDuration.THIS_WEEK, expires_at: '2025-06-22T00:00:00Z'};
+        expect(isCustomStatusExpired(store.getState(), nextWeek)).toBe(false);
     });
 });

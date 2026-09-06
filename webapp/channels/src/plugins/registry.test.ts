@@ -1,6 +1,7 @@
 // Copyright (c) 2015-present Mattermost, Inc. All Rights Reserved.
 // See LICENSE.txt for license information.
 
+import React from 'react';
 import {createStore} from 'redux';
 
 import pluginsReducer from 'reducers/plugins';
@@ -590,5 +591,45 @@ describe('PluginRegistry — registerProduct', () => {
         registry.registerProduct({...baseArgs, baseURL: '/boards', isTeamScoped: false});
 
         expect(getProducts()[0].isTeamScoped).toBe(false);
+    });
+});
+
+describe('PluginRegistry — resolveReactElement', () => {
+    const PLUGIN_ID = 'test_plugin';
+
+    beforeEach(() => {
+        mockCurrentStore = createStore(pluginsReducer);
+    });
+
+    it('should instantiate a component type passed as an icon into a React element', () => {
+        const registry = new PluginRegistry(PLUGIN_ID);
+        const Icon = () => null;
+
+        registry.registerProductSwitcherMenuItem({text: 'Component icon', icon: Icon, action: jest.fn()});
+
+        const item = mockCurrentStore.getState().components.ProductSwitcherMenuItem[0];
+        expect(React.isValidElement(item.icon)).toBe(true);
+        expect((item.icon as React.ReactElement).type).toBe(Icon);
+    });
+
+    it('should pass through an already-created element unchanged', () => {
+        const registry = new PluginRegistry(PLUGIN_ID);
+        const icon = React.createElement('span', {className: 'icon'});
+
+        registry.registerProductSwitcherMenuItem({text: 'Element icon', icon, action: jest.fn()});
+
+        const item = mockCurrentStore.getState().components.ProductSwitcherMenuItem[0];
+        expect(item.icon).toBe(icon);
+    });
+
+    it('should pass through plain strings and nullish values unchanged', () => {
+        const registry = new PluginRegistry(PLUGIN_ID);
+
+        registry.registerProductSwitcherMenuItem({text: 'String icon', icon: 'shield-outline', action: jest.fn()});
+        registry.registerProductSwitcherMenuItem({text: 'No icon', icon: undefined, action: jest.fn()});
+
+        const items = mockCurrentStore.getState().components.ProductSwitcherMenuItem;
+        expect(items[0].icon).toBe('shield-outline');
+        expect(items[1].icon).toBeUndefined();
     });
 });
